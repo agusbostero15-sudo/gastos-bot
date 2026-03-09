@@ -12,7 +12,7 @@ from datetime import date
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=".", static_url_path="")
 CORS(app)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
