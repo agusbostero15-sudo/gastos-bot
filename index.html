@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard de Gastos</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #252836;
+    --border: #2e3347;
+    --text: #e8eaf0;
+    --muted: #7b82a0;
+    --accent: #6c63ff;
+    --accent2: #ff6584;
+    --accent3: #43e97b;
+    --accent4: #f7971e;
+    --accent5: #38b2ac;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    padding: 2rem 2.5rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+  }
+
+  .logo-icon {
+    width: 42px; height: 42px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 12px;
+    display: grid; place-items: center;
+    font-size: 1.3rem;
+  }
+
+  .logo h1 { font-size: 1.5rem; font-weight: 800; letter-spacing: -.02em; }
+  .logo span { color: var(--accent); }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  select, button {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: .5rem 1rem;
+    border-radius: 8px;
+    font-family: 'DM Mono', monospace;
+    font-size: .85rem;
+    cursor: pointer;
+    transition: all .2s;
+  }
+
+  select:hover, button:hover {
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+
+  .btn-export {
+    background: linear-gradient(135deg, var(--accent), #8b85ff);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+  }
+
+  .btn-export:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(108,99,255,.4);
+  }
+
+  /* ── Layout ── */
+  main { padding: 2rem 2.5rem; max-width: 1400px; }
+
+  /* ── KPI Cards ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  .kpi {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 1.4rem 1.6rem;
+    position: relative;
+    overflow: hidden;
+    transition: transform .2s;
+  }
+
+  .kpi:hover { transform: translateY(-2px); }
+
+  .kpi::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+
+  .kpi.k1::before { background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+  .kpi.k2::before { background: linear-gradient(90deg, var(--accent3), #38a169); }
+  .kpi.k3::before { background: linear-gradient(90deg, var(--accent4), #ed8936); }
+  .kpi.k4::before { background: linear-gradient(90deg, var(--accent5), #2b6cb0); }
+
+  .kpi-label {
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: .5rem;
+  }
+
+  .kpi-value {
+    font-size: 1.9rem;
+    font-weight: 800;
+    letter-spacing: -.03em;
+    font-family: 'DM Mono', monospace;
+  }
+
+  .kpi-sub {
+    font-size: .8rem;
+    color: var(--muted);
+    margin-top: .3rem;
+  }
+
+  /* ── Chart grid ── */
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  @media (max-width: 900px) {
+    .charts-grid { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 1.5rem;
+  }
+
+  .card-title {
+    font-size: .9rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+    margin-bottom: 1.2rem;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+  }
+
+  .chart-wrap { position: relative; height: 260px; }
+
+  /* ── Tabla ── */
+  .table-card { grid-column: 1 / -1; }
+
+  .table-scroll { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .88rem;
+  }
+
+  thead th {
+    text-align: left;
+    padding: .7rem 1rem;
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    font-family: 'DM Mono', monospace;
+  }
+
+  thead th:first-child { border-radius: 8px 0 0 8px; }
+  thead th:last-child { border-radius: 0 8px 8px 0; }
+
+  tbody tr { border-bottom: 1px solid var(--border); transition: background .15s; }
+  tbody tr:hover { background: var(--surface2); }
+
+  tbody td { padding: .75rem 1rem; }
+
+  .badge {
+    display: inline-block;
+    padding: .2rem .7rem;
+    border-radius: 20px;
+    font-size: .78rem;
+    font-weight: 600;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+  }
+
+  .monto-cell {
+    font-family: 'DM Mono', monospace;
+    font-weight: 500;
+    color: var(--accent3);
+  }
+
+  /* ── Barra de categorías ── */
+  .cat-bars { display: flex; flex-direction: column; gap: .85rem; }
+
+  .cat-bar-row { display: flex; flex-direction: column; gap: .3rem; }
+
+  .cat-bar-info { display: flex; justify-content: space-between; font-size: .82rem; }
+  .cat-bar-name { font-weight: 600; }
+  .cat-bar-pct { color: var(--muted); font-family: 'DM Mono', monospace; }
+
+  .cat-bar-track {
+    height: 7px;
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .cat-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width .8s cubic-bezier(.4,0,.2,1);
+  }
+
+  /* ── Empty state ── */
+  .empty {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--muted);
+  }
+  .empty-icon { font-size: 3rem; margin-bottom: 1rem; }
+  .empty h3 { font-size: 1.2rem; margin-bottom: .5rem; color: var(--text); }
+
+  /* ── Loading ── */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .6rem;
+    color: var(--muted);
+    padding: 3rem;
+    font-size: .9rem;
+  }
+
+  .spinner {
+    width: 20px; height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Notification ── */
+  .notif {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent3);
+    padding: .8rem 1.2rem;
+    border-radius: 10px;
+    font-size: .85rem;
+    transform: translateY(80px);
+    opacity: 0;
+    transition: all .3s;
+    z-index: 100;
+  }
+
+  .notif.show { transform: translateY(0); opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">💸</div>
+    <h1>Gastos<span>Bot</span></h1>
+  </div>
+  <div class="header-right">
+    <select id="sel-mes">
+      <!-- populated by JS -->
+    </select>
+    <button class="btn-export" onclick="exportarExcel()">⬇ Exportar Excel</button>
+  </div>
+</header>
+
+<main>
+  <!-- KPIs -->
+  <div class="kpi-grid" id="kpis">
+    <div class="loading"><div class="spinner"></div> Cargando datos...</div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-grid" id="charts" style="display:none">
+    <!-- Donut -->
+    <div class="card">
+      <div class="card-title">📊 Distribución por categoría</div>
+      <div class="chart-wrap"><canvas id="chartDonut"></canvas></div>
+    </div>
+
+    <!-- Barras horizontales por categoría -->
+    <div class="card">
+      <div class="card-title">📈 Categorías</div>
+      <div class="cat-bars" id="catBars"></div>
+    </div>
+
+    <!-- Línea temporal (span full width) -->
+    <div class="card" style="grid-column:1/-1">
+      <div class="card-title">📅 Gastos por día</div>
+      <div class="chart-wrap" style="height:200px"><canvas id="chartLine"></canvas></div>
+    </div>
+
+    <!-- Tabla -->
+    <div class="card table-card">
+      <div class="card-title">🗒️ Detalle de gastos</div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Categoría</th>
+              <th>Descripción</th>
+              <th>Monto</th>
+            </tr>
+          </thead>
+          <tbody id="tabla-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="empty-state" style="display:none">
+    <div class="empty">
+      <div class="empty-icon">🤖</div>
+      <h3>No hay gastos registrados</h3>
+      <p>Empezá a registrar gastos desde el bot de Telegram.<br>Aparecerán aquí automáticamente.</p>
+    </div>
+  </div>
+</main>
+
+<div class="notif" id="notif"></div>
+
+<script>
+// ─── Config ────────────────────────────────────────────────────────────────
+const API = '/api';  // Cambiá si el backend corre en otro puerto: 'http://localhost:5000/api'
+
+const CAT_COLORS = [
+  '#6c63ff','#ff6584','#43e97b','#f7971e','#38b2ac',
+  '#fc5c7d','#6a82fb','#11998e','#f2994a','#eb5757',
+  '#2d9cdb','#9b51e0'
+];
+
+let chartDonut = null;
+let chartLine = null;
+let currentData = null;
+
+// ─── Utils ─────────────────────────────────────────────────────────────────
+function fmt(n) {
+  return new Intl.NumberFormat('es-AR', { style:'currency', currency:'ARS', minimumFractionDigits:2 }).format(n);
+}
+
+function showNotif(msg) {
+  const el = document.getElementById('notif');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+// ─── Populate month selector ───────────────────────────────────────────────
+function populateMeses() {
+  const sel = document.getElementById('sel-mes');
+  const hoy = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+    const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const label = d.toLocaleDateString('es-AR', { month:'long', year:'numeric' });
+    const opt = new Option(label.charAt(0).toUpperCase() + label.slice(1), val);
+    if (i === 0) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => cargarDatos(sel.value));
+}
+
+// ─── Fetch data ─────────────────────────────────────────────────────────────
+async function cargarDatos(mes) {
+  try {
+    const res = await fetch(`${API}/gastos?mes=${mes}`);
+    if (!res.ok) throw new Error('API error');
+    const data = await res.json();
+    currentData = data;
+    renderDashboard(data, mes);
+  } catch (e) {
+    // Demo mode: datos de ejemplo
+    const demo = generarDemoData(mes);
+    currentData = demo;
+    renderDashboard(demo, mes);
+  }
+}
+
+// Demo data (cuando no hay backend)
+function generarDemoData(mes) {
+  const cats = ['🍔 Comida','🚗 Transporte','🛒 Supermercado','🎮 Ocio','💡 Servicios','🍺 Salidas','💊 Salud'];
+  const montos = [12400, 5800, 18600, 4200, 8900, 6100, 2300];
+  const [anio, m] = mes.split('-').map(Number);
+  const diasEnMes = new Date(anio, m, 0).getDate();
+  
+  const gastos = [];
+  cats.forEach((cat, ci) => {
+    const n = Math.floor(montos[ci] / (500 + ci * 200));
+    for (let i = 0; i < n; i++) {
+      const dia = Math.floor(Math.random() * diasEnMes) + 1;
+      gastos.push({
+        fecha: `${anio}-${String(m).padStart(2,'0')}-${String(dia).padStart(2,'0')}`,
+        categoria: cat,
+        descripcion: ['Ejemplo de gasto', 'Registro demo', 'Gasto registrado'][i % 3],
+        monto: Math.round((montos[ci] / n) * (0.7 + Math.random() * 0.6))
+      });
+    }
+  });
+  
+  gastos.sort((a,b) => b.fecha.localeCompare(a.fecha));
+  
+  const total = gastos.reduce((s,g) => s + g.monto, 0);
+  const porCat = {};
+  gastos.forEach(g => { porCat[g.categoria] = (porCat[g.categoria]||0) + g.monto; });
+  
+  return { gastos, total, por_categoria: porCat, demo: true };
+}
+
+// ─── Render ─────────────────────────────────────────────────────────────────
+function renderDashboard(data, mes) {
+  const { gastos, total, por_categoria } = data;
+  
+  if (!gastos || gastos.length === 0) {
+    document.getElementById('kpis').innerHTML = '';
+    document.getElementById('charts').style.display = 'none';
+    document.getElementById('empty-state').style.display = 'block';
+    return;
+  }
+  
+  document.getElementById('charts').style.display = 'grid';
+  document.getElementById('empty-state').style.display = 'none';
+  
+  // KPIs
+  const promedioXdia = total / new Date(mes + '-01').getDate(); // rough
+  const maxCat = Object.entries(por_categoria).sort((a,b)=>b[1]-a[1])[0];
+  
+  document.getElementById('kpis').innerHTML = `
+    <div class="kpi k1">
+      <div class="kpi-label">Total del mes</div>
+      <div class="kpi-value">${fmt(total)}</div>
+      <div class="kpi-sub">${gastos.length} registros</div>
+    </div>
+    <div class="kpi k2">
+      <div class="kpi-label">Promedio por día</div>
+      <div class="kpi-value">${fmt(total/30)}</div>
+      <div class="kpi-sub">estimado mensual</div>
+    </div>
+    <div class="kpi k3">
+      <div class="kpi-label">Mayor gasto único</div>
+      <div class="kpi-value">${fmt(Math.max(...gastos.map(g=>g.monto)))}</div>
+      <div class="kpi-sub">${gastos.find(g=>g.monto===Math.max(...gastos.map(g=>g.monto)))?.categoria || ''}</div>
+    </div>
+    <div class="kpi k4">
+      <div class="kpi-label">Categoría top</div>
+      <div class="kpi-value" style="font-size:1.2rem">${maxCat[0]}</div>
+      <div class="kpi-sub">${fmt(maxCat[1])} — ${(maxCat[1]/total*100).toFixed(0)}% del total</div>
+    </div>
+  `;
+  
+  // Donut chart
+  const cats = Object.keys(por_categoria);
+  const valores = Object.values(por_categoria);
+  
+  if (chartDonut) chartDonut.destroy();
+  chartDonut = new Chart(document.getElementById('chartDonut'), {
+    type: 'doughnut',
+    data: {
+      labels: cats,
+      datasets: [{
+        data: valores,
+        backgroundColor: CAT_COLORS,
+        borderWidth: 0,
+        hoverOffset: 8
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '65%',
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: { color: '#7b82a0', font: { size: 11, family: 'DM Mono' }, padding: 10, boxWidth: 12 }
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${fmt(ctx.parsed)} (${(ctx.parsed/total*100).toFixed(1)}%)`
+          }
+        }
+      }
+    }
+  });
+  
+  // Barras de categoría
+  const maxVal = Math.max(...valores);
+  const catBarsEl = document.getElementById('catBars');
+  catBarsEl.innerHTML = cats.map((cat, i) => {
+    const pct = ((valores[i] / maxVal) * 100).toFixed(1);
+    const totalPct = (valores[i] / total * 100).toFixed(0);
+    return `
+      <div class="cat-bar-row">
+        <div class="cat-bar-info">
+          <span class="cat-bar-name">${cat}</span>
+          <span class="cat-bar-pct">${fmt(valores[i])} · ${totalPct}%</span>
+        </div>
+        <div class="cat-bar-track">
+          <div class="cat-bar-fill" style="width:0%;background:${CAT_COLORS[i % CAT_COLORS.length]}" data-w="${pct}"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  // Animate bars
+  setTimeout(() => {
+    catBarsEl.querySelectorAll('.cat-bar-fill').forEach(el => {
+      el.style.width = el.dataset.w + '%';
+    });
+  }, 100);
+  
+  // Line chart (gastos por día)
+  const porDia = {};
+  gastos.forEach(g => {
+    const d = g.fecha.split('-')[2];
+    porDia[d] = (porDia[d] || 0) + g.monto;
+  });
+  const dias = Object.keys(porDia).sort();
+  const montosDia = dias.map(d => porDia[d]);
+  
+  if (chartLine) chartLine.destroy();
+  chartLine = new Chart(document.getElementById('chartLine'), {
+    type: 'line',
+    data: {
+      labels: dias.map(d => `${d}`),
+      datasets: [{
+        data: montosDia,
+        borderColor: '#6c63ff',
+        backgroundColor: 'rgba(108,99,255,.12)',
+        fill: true,
+        tension: .4,
+        pointBackgroundColor: '#6c63ff',
+        pointRadius: 4,
+        pointHoverRadius: 7,
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: ctx => ` ${fmt(ctx.parsed.y)}` }
+        }
+      },
+      scales: {
+        x: { grid: { color: '#2e3347' }, ticks: { color: '#7b82a0', font: { family: 'DM Mono', size: 11 } } },
+        y: { grid: { color: '#2e3347' }, ticks: { color: '#7b82a0', font: { family: 'DM Mono', size: 11 },
+          callback: v => fmt(v) } }
+      }
+    }
+  });
+  
+  // Tabla
+  const tbody = document.getElementById('tabla-body');
+  tbody.innerHTML = gastos.slice(0, 50).map(g => {
+    const fecha = new Date(g.fecha + 'T00:00:00').toLocaleDateString('es-AR');
+    return `
+      <tr>
+        <td style="color:var(--muted);font-family:'DM Mono',monospace;font-size:.82rem">${fecha}</td>
+        <td><span class="badge">${g.categoria}</span></td>
+        <td style="color:var(--muted)">${g.descripcion}</td>
+        <td class="monto-cell">${fmt(g.monto)}</td>
+      </tr>
+    `;
+  }).join('');
+  
+  if (data.demo) showNotif('📊 Mostrando datos de demostración (backend no conectado)');
+}
+
+// ─── Export ─────────────────────────────────────────────────────────────────
+async function exportarExcel() {
+  const mes = document.getElementById('sel-mes').value;
+  try {
+    window.location.href = `${API}/exportar?mes=${mes}`;
+  } catch(e) {
+    showNotif('❌ Conectá el backend para exportar Excel');
+  }
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+populateMeses();
+const mesActual = document.getElementById('sel-mes').value;
+cargarDatos(mesActual);
+</script>
+</body>
+</html>
