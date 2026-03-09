@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Bot de Telegram para registro de gastos personales.
-Guarda gastos en SQLite y permite exportar a Excel.
+Usa PostgreSQL (Railway) como base de datos.
 """
 
 import logging
 import re
-import sqlite3
 import os
+import psycopg2
+import psycopg2.extras
 from datetime import datetime, date
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -16,8 +17,8 @@ from telegram.ext import (
 )
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8706111305:AAE5G3aSTZo1jD5DBDF-p5ROAWtUsgWEUpY")
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "gastos.db")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "TU_TOKEN_AQUI")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -25,7 +26,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Categorías disponibles
 CATEGORIAS = [
     "🍔 Comida", "🚗 Transporte", "🏠 Hogar", "💊 Salud",
     "🎮 Ocio", "👔 Ropa", "📚 Educación", "💡 Servicios",
@@ -36,75 +36,76 @@ ESPERANDO_CATEGORIA = 1
 ESPERANDO_DESCRIPCION = 2
 
 # ─── Base de datos ─────────────────────────────────────────────────────────────
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
+
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS gastos (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER NOT NULL,
+            id          SERIAL PRIMARY KEY,
+            user_id     BIGINT NOT NULL,
             username    TEXT,
-            monto       REAL NOT NULL,
+            monto       NUMERIC(12,2) NOT NULL,
             categoria   TEXT NOT NULL,
             descripcion TEXT,
-            fecha       TEXT NOT NULL,
-            created_at  TEXT NOT NULL
+            fecha       DATE NOT NULL,
+            created_at  TIMESTAMP NOT NULL DEFAULT NOW()
         )
     """)
     conn.commit()
     conn.close()
 
 def guardar_gasto(user_id, username, monto, categoria, descripcion, fecha=None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
-    hoy = fecha or date.today().isoformat()
+    hoy = fecha or date.today()
     cur.execute("""
-        INSERT INTO gastos (user_id, username, monto, categoria, descripcion, fecha, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (user_id, username, monto, categoria, descripcion, hoy, datetime.now().isoformat()))
+        INSERT INTO gastos (user_id, username, monto, categoria, descripcion, fecha)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (user_id, username, monto, categoria, descripcion, hoy))
     conn.commit()
     conn.close()
 
 def obtener_resumen_mes(user_id, mes=None, anio=None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
     hoy = date.today()
     mes = mes or hoy.month
     anio = anio or hoy.year
-    prefix = f"{anio}-{mes:02d}"
     cur.execute("""
         SELECT categoria, SUM(monto), COUNT(*)
         FROM gastos
-        WHERE user_id = ? AND fecha LIKE ?
+        WHERE user_id = %s AND EXTRACT(MONTH FROM fecha) = %s AND EXTRACT(YEAR FROM fecha) = %s
         GROUP BY categoria
         ORDER BY SUM(monto) DESC
-    """, (user_id, f"{prefix}%"))
+    """, (user_id, mes, anio))
     rows = cur.fetchall()
     total = sum(r[1] for r in rows)
     conn.close()
     return rows, total
 
 def obtener_ultimos_gastos(user_id, limite=5):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         SELECT monto, categoria, descripcion, fecha
         FROM gastos
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY created_at DESC
-        LIMIT ?
+        LIMIT %s
     """, (user_id, limite))
     rows = cur.fetchall()
     conn.close()
     return rows
 
 def eliminar_ultimo_gasto(user_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         DELETE FROM gastos WHERE id = (
-            SELECT id FROM gastos WHERE user_id = ?
+            SELECT id FROM gastos WHERE user_id = %s
             ORDER BY created_at DESC LIMIT 1
         )
     """, (user_id,))
@@ -115,25 +116,13 @@ def eliminar_ultimo_gasto(user_id):
 
 # ─── Parseo de mensajes ────────────────────────────────────────────────────────
 def parsear_gasto(texto):
-    """
-    Intenta parsear un mensaje como gasto.
-    Formatos aceptados:
-      - "500 comida almuerzo"
-      - "comida 500 almuerzo"  
-      - "gasté 1200 en transporte"
-      - "supermercado $350.50"
-    """
     texto = texto.lower().strip()
-    
-    # Buscar monto (número con o sin $, punto o coma como decimal)
     monto_match = re.search(r'\$?\s*(\d+(?:[.,]\d{1,2})?)', texto)
     if not monto_match:
         return None, None, None
-    
     monto_str = monto_match.group(1).replace(".", "").replace(",", ".")
     monto = float(monto_str)
-    
-    # Detectar categoría por palabras clave
+
     categoria_map = {
         "🍔 Comida":       ["comida", "almuerzo", "cena", "desayuno", "restaurant", "pizza", "hamburgues", "delivery", "pedidos"],
         "🚗 Transporte":   ["transporte", "colectivo", "uber", "taxi", "nafta", "combustible", "tren", "subte", "bus"],
@@ -148,7 +137,7 @@ def parsear_gasto(texto):
         "✈️ Viajes":       ["viaje", "vuelo", "hotel", "turismo", "vacaciones"],
         "📦 Otros":        ["otro", "varios", "misc"],
     }
-    
+
     categoria_detectada = None
     for cat, palabras in categoria_map.items():
         for p in palabras:
@@ -157,15 +146,14 @@ def parsear_gasto(texto):
                 break
         if categoria_detectada:
             break
-    
-    # Descripción: el texto sin el monto
+
     descripcion = re.sub(r'\$?\s*\d+(?:[.,]\d{1,2})?', '', texto).strip()
     descripcion = re.sub(r'\b(gaste|gasté|en|de|por|pague|pagué)\b', '', descripcion).strip()
     descripcion = descripcion.capitalize() or "Sin descripción"
-    
+
     return monto, categoria_detectada, descripcion
 
-# ─── Teclado ───────────────────────────────────────────────────────────────────
+# ─── Teclados ──────────────────────────────────────────────────────────────────
 def teclado_categorias():
     botones = []
     row = []
@@ -207,7 +195,7 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Registrar un gasto rápido:*\n"
         "  `500 comida almuerzo`\n"
         "  `1200 transporte uber`\n"
-        "  `$350.50 supermercado`\n"
+        "  `350 supermercado`\n"
         "  `gasté 800 en salidas`\n\n"
         "*Comandos disponibles:*\n"
         "  /nuevo → Registro manual con categoría\n"
@@ -216,23 +204,21 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /exportar → Descargar Excel\n"
         "  /deshacer → Eliminar último gasto\n"
         "  /start → Volver al inicio\n\n"
-        "*Categorías disponibles:*\n"
-        + "  " + " | ".join(CATEGORIAS),
+        "💡 *Tip:* Escribí los montos sin punto de miles. Ej: `12000` no `12.000`",
         parse_mode="Markdown",
         reply_markup=teclado_principal()
     )
 
 async def nuevo_gasto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inicia el flujo de registro manual."""
     context.user_data.clear()
     await update.message.reply_text(
-        "💰 *¿Cuánto gastaste?*\nEscribí el monto (ej: `500` o `1350.50`)",
+        "💰 *¿Cuánto gastaste?*\nEscribí el monto (ej: `500` o `1350`)",
         parse_mode="Markdown"
     )
     return ESPERANDO_CATEGORIA
 
 async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto = update.message.text.replace("$", "").replace(",", ".").strip()
+    texto = update.message.text.replace("$", "").replace(".", "").replace(",", ".").strip()
     try:
         monto = float(texto)
         context.user_data["monto"] = monto
@@ -251,30 +237,24 @@ async def recibir_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if texto == "❌ Cancelar":
         await update.message.reply_text("❌ Cancelado.", reply_markup=teclado_principal())
         return ConversationHandler.END
-    
     if texto not in CATEGORIAS:
         await update.message.reply_text("Por favor elegí una categoría del teclado.")
         return ESPERANDO_DESCRIPCION
-    
     context.user_data["categoria"] = texto
     await update.message.reply_text(
         f"📝 Categoría: *{texto}*\n\nAgregá una descripción corta (o escribí `-` para omitir):",
         parse_mode="Markdown"
     )
-    return ConversationHandler.END + 1  # paso extra
+    return ConversationHandler.END + 1
 
-# Usamos un handler directo para el fin del flujo
 async def recibir_descripcion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     descripcion = update.message.text
     if descripcion == "-":
         descripcion = "Sin descripción"
-    
     monto = context.user_data.get("monto")
     categoria = context.user_data.get("categoria")
     user = update.effective_user
-    
     guardar_gasto(user.id, user.username or user.first_name, monto, categoria, descripcion)
-    
     await update.message.reply_text(
         f"✅ *Gasto registrado*\n\n"
         f"💰 Monto: `${monto:,.2f}`\n"
@@ -296,189 +276,124 @@ async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     rows, total = obtener_resumen_mes(user_id)
     hoy = date.today()
-    
     if not rows:
         await update.message.reply_text(
             f"📊 No hay gastos registrados para *{hoy.strftime('%B %Y')}*.",
             parse_mode="Markdown"
         )
         return
-    
     texto = f"📊 *Resumen de {hoy.strftime('%B %Y')}*\n\n"
     for cat, suma, count in rows:
-        porcentaje = (suma / total * 100) if total > 0 else 0
+        porcentaje = (float(suma) / float(total) * 100) if total > 0 else 0
         barra = "█" * int(porcentaje / 10) + "░" * (10 - int(porcentaje / 10))
-        texto += f"{cat}\n`{barra}` {porcentaje:.0f}%\n💵 ${suma:,.2f} ({count} gastos)\n\n"
-    
-    texto += f"━━━━━━━━━━━━━━\n💰 *Total: ${total:,.2f}*"
-    
+        texto += f"{cat}\n`{barra}` {porcentaje:.0f}%\n💵 ${float(suma):,.2f} ({count} gastos)\n\n"
+    texto += f"━━━━━━━━━━━━━━\n💰 *Total: ${float(total):,.2f}*"
     await update.message.reply_text(texto, parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def ultimos_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     gastos = obtener_ultimos_gastos(user_id)
-    
     if not gastos:
         await update.message.reply_text("📋 No tenés gastos registrados aún.")
         return
-    
     texto = "📋 *Últimos 5 gastos:*\n\n"
     for monto, cat, desc, fecha in gastos:
-        fecha_fmt = datetime.strptime(fecha, "%Y-%m-%d").strftime("%d/%m")
-        texto += f"• `{fecha_fmt}` {cat} — *${monto:,.2f}*\n  _{desc}_\n\n"
-    
+        fecha_fmt = fecha.strftime("%d/%m") if hasattr(fecha, 'strftime') else str(fecha)
+        texto += f"• `{fecha_fmt}` {cat} — *${float(monto):,.2f}*\n  _{desc}_\n\n"
     await update.message.reply_text(texto, parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def exportar_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.chart import BarChart, Reference
     from openpyxl.utils import get_column_letter
     import io
 
     user_id = update.effective_user.id
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
-    
-    # Todos los gastos del usuario
     cur.execute("""
         SELECT fecha, categoria, descripcion, monto
-        FROM gastos WHERE user_id = ?
+        FROM gastos WHERE user_id = %s
         ORDER BY fecha DESC
     """, (user_id,))
     gastos = cur.fetchall()
     conn.close()
-    
+
     if not gastos:
         await update.message.reply_text("❌ No tenés gastos para exportar.")
         return
-    
+
     wb = openpyxl.Workbook()
-    
-    # ── Hoja 1: Todos los gastos ──
     ws = wb.active
     ws.title = "Todos los gastos"
-    
-    # Estilos
-    header_fill = PatternFill(start_color="2D3748", end_color="2D3748", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=11)
+
+    h_fill = PatternFill(start_color="2D3748", end_color="2D3748", fill_type="solid")
+    h_font = Font(color="FFFFFF", bold=True, size=11)
     alt_fill = PatternFill(start_color="EDF2F7", end_color="EDF2F7", fill_type="solid")
     thin = Side(style="thin", color="CBD5E0")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    
-    headers = ["Fecha", "Categoría", "Descripción", "Monto ($)"]
-    col_widths = [15, 22, 35, 15]
-    
-    for col, (h, w) in enumerate(zip(headers, col_widths), 1):
-        cell = ws.cell(row=1, column=col, value=h)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = border
+    brd = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for col, (h, w) in enumerate(zip(["Fecha","Categoría","Descripción","Monto ($)"], [14,22,35,15]), 1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font = h_font; c.fill = h_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = brd
         ws.column_dimensions[get_column_letter(col)].width = w
     ws.row_dimensions[1].height = 25
-    
+
     total = 0
     for i, (fecha, cat, desc, monto) in enumerate(gastos, 2):
-        fecha_fmt = datetime.strptime(fecha, "%Y-%m-%d").strftime("%d/%m/%Y")
-        row_data = [fecha_fmt, cat, desc, monto]
-        for col, val in enumerate(row_data, 1):
-            cell = ws.cell(row=i, column=col, value=val)
-            cell.border = border
-            cell.alignment = Alignment(vertical="center")
-            if i % 2 == 0:
-                cell.fill = alt_fill
+        fecha_fmt = fecha.strftime("%d/%m/%Y") if hasattr(fecha, 'strftime') else str(fecha)
+        fill = alt_fill if i % 2 == 0 else None
+        for col, val in enumerate([fecha_fmt, cat, desc, float(monto)], 1):
+            c = ws.cell(row=i, column=col, value=val)
+            c.border = brd
+            c.alignment = Alignment(vertical="center")
+            if fill: c.fill = fill
             if col == 4:
-                cell.number_format = '#,##0.00'
-                cell.alignment = Alignment(horizontal="right", vertical="center")
-        total += monto
-    
-    # Fila total
-    last_row = len(gastos) + 2
-    ws.cell(row=last_row, column=3, value="TOTAL").font = Font(bold=True)
-    cell_total = ws.cell(row=last_row, column=4, value=total)
-    cell_total.font = Font(bold=True, color="1A202C")
-    cell_total.number_format = '#,##0.00'
-    cell_total.fill = PatternFill(start_color="BEE3F8", end_color="BEE3F8", fill_type="solid")
-    
-    # ── Hoja 2: Resumen por mes ──
-    ws2 = wb.create_sheet("Resumen mensual")
-    cur2 = sqlite3.connect(DB_PATH).cursor()
-    cur2.execute("""
-        SELECT strftime('%Y-%m', fecha) as mes, categoria, SUM(monto)
-        FROM gastos WHERE user_id = ?
-        GROUP BY mes, categoria
-        ORDER BY mes DESC, SUM(monto) DESC
-    """, (user_id,))
-    resumen_data = cur2.fetchall()
-    
-    ws2.cell(row=1, column=1, value="Mes").font = header_font
-    ws2.cell(row=1, column=1).fill = header_fill
-    ws2.cell(row=1, column=2, value="Categoría").font = header_font
-    ws2.cell(row=1, column=2).fill = header_fill
-    ws2.cell(row=1, column=3, value="Total ($)").font = header_font
-    ws2.cell(row=1, column=3).fill = header_fill
-    ws2.column_dimensions['A'].width = 12
-    ws2.column_dimensions['B'].width = 22
-    ws2.column_dimensions['C'].width = 15
-    
-    for i, (mes, cat, suma) in enumerate(resumen_data, 2):
-        ws2.cell(row=i, column=1, value=mes)
-        ws2.cell(row=i, column=2, value=cat)
-        cell = ws2.cell(row=i, column=3, value=suma)
-        cell.number_format = '#,##0.00'
-        if i % 2 == 0:
-            for c in range(1, 4):
-                ws2.cell(row=i, column=c).fill = alt_fill
-    
-    # Guardar y enviar
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    
-    nombre_archivo = f"gastos_{date.today().strftime('%Y%m')}.xlsx"
+                c.number_format = '#,##0.00'
+                c.alignment = Alignment(horizontal="right", vertical="center")
+        total += float(monto)
+
+    last = len(gastos) + 2
+    ws.cell(row=last, column=3, value="TOTAL").font = Font(bold=True)
+    c = ws.cell(row=last, column=4, value=total)
+    c.font = Font(bold=True)
+    c.number_format = '#,##0.00'
+    c.fill = PatternFill(start_color="BEE3F8", end_color="BEE3F8", fill_type="solid")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
     await update.message.reply_document(
-        document=buffer,
-        filename=nombre_archivo,
+        document=buf,
+        filename=f"gastos_{date.today().strftime('%Y%m')}.xlsx",
         caption=f"📊 *Tu reporte de gastos*\n{len(gastos)} registros exportados.",
         parse_mode="Markdown",
         reply_markup=teclado_principal()
     )
 
 async def deshacer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if eliminar_ultimo_gasto(user_id):
-        await update.message.reply_text(
-            "🗑️ Último gasto eliminado.",
-            reply_markup=teclado_principal()
-        )
+    if eliminar_ultimo_gasto(update.effective_user.id):
+        await update.message.reply_text("🗑️ Último gasto eliminado.", reply_markup=teclado_principal())
     else:
         await update.message.reply_text("❌ No hay gastos para eliminar.")
 
 async def mensaje_libre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja mensajes de texto libre intentando parsearlos como gastos."""
     texto = update.message.text
-    
-    # Botones del teclado principal
-    if texto == "📊 Resumen del mes":
-        return await resumen(update, context)
-    if texto == "📋 Últimos gastos":
-        return await ultimos_gastos(update, context)
-    if texto == "📥 Exportar Excel":
-        return await exportar_excel(update, context)
-    if texto == "🗑️ Deshacer último":
-        return await deshacer(update, context)
-    if texto == "❓ Ayuda":
-        return await ayuda(update, context)
-    
-    # Intentar parsear como gasto
+
+    if texto == "📊 Resumen del mes": return await resumen(update, context)
+    if texto == "📋 Últimos gastos":  return await ultimos_gastos(update, context)
+    if texto == "📥 Exportar Excel":  return await exportar_excel(update, context)
+    if texto == "🗑️ Deshacer último": return await deshacer(update, context)
+    if texto == "❓ Ayuda":           return await ayuda(update, context)
+
     monto, categoria, descripcion = parsear_gasto(texto)
-    
+
     if monto and monto > 0:
         user = update.effective_user
-        
         if categoria:
-            # Gasto con categoría detectada automáticamente
             guardar_gasto(user.id, user.username or user.first_name, monto, categoria, descripcion)
             await update.message.reply_text(
                 f"✅ *Gasto registrado automáticamente*\n\n"
@@ -489,7 +404,6 @@ async def mensaje_libre(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=teclado_principal()
             )
         else:
-            # Monto detectado pero sin categoría → pedir categoría
             context.user_data["monto"] = monto
             context.user_data["descripcion"] = descripcion
             context.user_data["esperando_cat"] = True
@@ -499,7 +413,6 @@ async def mensaje_libre(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=teclado_categorias()
             )
     elif context.user_data.get("esperando_cat"):
-        # Recibiendo categoría para gasto anterior
         if texto in CATEGORIAS:
             monto = context.user_data["monto"]
             desc = context.user_data.get("descripcion", "Sin descripción")
@@ -507,9 +420,7 @@ async def mensaje_libre(update: Update, context: ContextTypes.DEFAULT_TYPE):
             guardar_gasto(user.id, user.username or user.first_name, monto, texto, desc)
             context.user_data.clear()
             await update.message.reply_text(
-                f"✅ *Gasto registrado*\n\n"
-                f"💰 ${monto:,.2f} — {texto}\n"
-                f"📝 {desc}",
+                f"✅ *Gasto registrado*\n\n💰 ${monto:,.2f} — {texto}\n📝 {desc}",
                 parse_mode="Markdown",
                 reply_markup=teclado_principal()
             )
@@ -530,10 +441,8 @@ async def mensaje_libre(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     init_db()
-    
     app = Application.builder().token(TOKEN).build()
-    
-    # ConversationHandler para /nuevo
+
     conv = ConversationHandler(
         entry_points=[CommandHandler("nuevo", nuevo_gasto_start)],
         states={
@@ -543,7 +452,7 @@ def main():
         },
         fallbacks=[CommandHandler("cancelar", cancelar)],
     )
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ayuda", ayuda))
     app.add_handler(CommandHandler("resumen", resumen))
@@ -552,9 +461,9 @@ def main():
     app.add_handler(CommandHandler("deshacer", deshacer))
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje_libre))
-    
+
     logger.info("🤖 Bot iniciado. Esperando mensajes...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
